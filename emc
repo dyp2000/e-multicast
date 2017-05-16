@@ -1,0 +1,61 @@
+#!/bin/bash
+
+#ERL_CRASH_DUMP_SECONDS=-1
+#ERL_FULLSWEEP_AFTER=0
+#export ERL_CRASH_DUMP_SECONDS
+
+OS=`uname -s`
+if [[ "$OS" == "Linux" ]]; 
+then
+    HOST=`/sbin/ifconfig eth0 | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}'`
+else
+    HOST=`/sbin/ifconfig en0 | grep "inet" | grep -v "inet6" | awk '{print $2}'`
+fi
+
+NODENAME=emc@$HOST
+COOKIE=emc
+
+case $1 in
+    start)
+		export ERL_FULLSWEEP_AFTER=0
+		erl +r +K true -config emc -s emc -detached -name $NODENAME -setcookie $COOKIE -infile $3 -mcgrp $5 -speed $7
+		PID=`ps ax | grep emc | grep -v grep | awk '{print $1}'`
+		echo $PID>./emc.pid
+		echo "emc Server started with Process ID $PID"
+		;;
+    stop)
+		PID=`ps ax | grep ${NODENAME} | grep -v grep | awk '{print $1}'`
+		sudo kill $PID
+		PID_EPMD=`ps ax | grep epmd | grep -v grep | awk '{print $1}'`
+		sudo kill $PID_EPMD
+		echo "emc Server stopped"
+		;;
+    status)
+		PID=`ps ax | grep ${NODENAME} | grep -v grep | awk '{print $1}'`
+		if [ -z $PID ];
+		then
+			echo "emc Server is offline"
+		else
+			echo "emc Server is online. Process ID $PID"
+		fi
+		PID_EPMD=`ps ax | grep epmd | grep -v grep | awk '{print $1}'`
+		if [ -z $PID_EPMD ];
+		then
+			echo "Erlang port mapper daemon is offline"
+		else
+			echo "Erlang port mapper daemon is online. Process ID $PID_EPMD"
+		fi
+		;;
+    log)
+		tail -f ./log/console.log
+		;;
+    debug)
+		export ERL_FULLSWEEP_AFTER=-1
+		erl +r +K true -config emc -s emc -name $NODENAME -setcookie $COOKIE -infile $3 -mcgrp $5 -speed $7
+		echo "emc Server was started in DEBUG MODE"
+		echo "emc Server stopped"
+		;;
+    *)
+		echo $"Usage: $0 {start|stop|status|log|debug} -infile filepath -mcgrp ip_addr -speed kB/s"
+		exit 1
+esac
