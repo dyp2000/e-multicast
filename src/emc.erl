@@ -10,11 +10,19 @@
 -email("dyp2000@mail.ru").
 
 -define(APPS, [
+	sasl,
+	crypto,
+	ranch,
+	cowlib,
+	cowboy,
 	emc_app
 ]).
 
 %% API
--export([start/0, stop/0]).
+-export([
+	start/0, 
+	stop/0
+]).
 
 %%%===================================================================
 %%% API functions

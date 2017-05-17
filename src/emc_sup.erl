@@ -24,6 +24,7 @@ start_link() ->
 
 init([]) ->
     {ok, { {one_for_one, 5, 10}, [
-    	?CHILD(emc_srv, worker)
+    	?CHILD(emc_srv, worker),
+		?CHILD(emc_ajax, worker)
     ]} }.
 
