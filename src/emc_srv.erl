@@ -102,9 +102,7 @@ init([]) ->
 			Crc32 = erlang:crc32(B),
 			io:format("file crc32: ~p~n", [Crc32]),
 
-			{ok, FileInfo} = file:read_file_info(File),
-			Sz = FileInfo#file_info.size,
-
+			Sz = filelib:file_size(File),
 			calc_pkt_count(Sz, Speed),
 
 			{ok, IoDev} = file:open(File, [read, binary]),
@@ -147,6 +145,7 @@ init([]) ->
 handle_call(get_metadata, _From, State) ->
 	Reply = [
 		{group, ?chrBin(inet:ntoa(State#state.multicast_group))},
+		{filename, filename:basename(State#state.filepath)},
 		{filesize, State#state.file_size},
 		{crc32, State#state.crc32}
 	],
@@ -287,17 +286,18 @@ calc_parts_pkt_count(P, Pt, Speed, Acc) ->
 		 end,
 	calc_parts_pkt_count(P-1, Pt, Speed, Acc+P1+P3).
 
+make_pkt(Bin, Cnt) -> <<Cnt/integer, Bin/binary>>.
+
 send_block(_Socket, _Group, _Time, <<>>, C) ->
 	C;
-send_block(Socket, Group, Time, <<Block:1472/binary, Rest/binary>>, C) ->
-	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, Block),
+send_block(Socket, Group, Time, <<Block:1468/binary, Rest/binary>>, C) ->
+	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(Block, C)),
 	timer:sleep(trunc(Time/2)),
 	send_block(Socket, Group, Time, Rest, C+1);
 send_block(Socket, Group, Time, <<Rest/binary>>, C) ->
-	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, Rest),
+	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(Rest, C)),
 	timer:sleep(trunc(Time/2)),
 	send_block(Socket, Group, Time, <<>>, C+1).
-
 
 send_file(Socket, Group, IoDev, Speed, Time, C) ->
 	[{pos, Pos}|_] = ets:match_object(emc, {pos, '$1'}),
@@ -316,4 +316,3 @@ send_file(Socket, Group, IoDev, Speed, Time, C) ->
 		{error, _Reason} ->
 			error
 	end.
-
