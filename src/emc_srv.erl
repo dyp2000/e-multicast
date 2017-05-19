@@ -195,7 +195,7 @@ handle_cast(_Request, State) ->
 
 handle_info(send_file, State) ->
 	erlang:cancel_timer(State#state.send_timer),
-	Pid = spawn(emc_srv, send_file, [State#state.mSocket, State#state.multicast_group, State#state.iodev, State#state.speed, State#state.stime, 0]),
+	Pid = spawn_link(emc_srv, send_file, [State#state.mSocket, State#state.multicast_group, State#state.iodev, State#state.speed, State#state.stime, 0]),
 	{noreply, State#state{sender = Pid}};
 
 handle_info(_Info, State) ->
