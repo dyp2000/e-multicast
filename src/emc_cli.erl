@@ -11,13 +11,13 @@
 
 -define(MCAST_GROUP,  {224,2,2,4}).
 -define(MCAST_PORT, 1234).
+-define(RECVD_FILE, "./received.file").
 -define(utf8(Chars), unicode:characters_to_list(Chars)).
 -define(chrBin(Chars), unicode:characters_to_binary(Chars)).
 
 %% API
 -export([
-	start/0,
-	receiver/5
+	start/0
 ]).
 
 %%%===================================================================
@@ -29,7 +29,7 @@ start() ->
 	start_over(),
 	Res = gen_udp:open(?MCAST_PORT, [
 		binary,
-		{active, false},
+		{active, true},
 		{reuseaddr, true},
 		{ip, Group},
 		{multicast_ttl, 1},
@@ -38,38 +38,29 @@ start() ->
 	]),
 	case Res of
 		{ok, Sock} ->
+			inet:setopts(Sock, [{buffer, 16*1024*1024}, {recbuf, 1024*1024}]),
 			Opts = inet:getopts(Sock, [buffer, recbuf]),
 			io:format("Opts: ~p~n", [Opts]),
-			{ok, IoDev} = file:open("./received.file", [write, binary]),
-			receiver(Sock, 0, Crc32, IoDev, <<>>);
+			{ok, IoDev} = file:open(?RECVD_FILE, [write, binary]),
+			loop(Sock, 0, Crc32, IoDev, <<>>, 0);
 		{error, Err} ->
 			io:format("Error: {~p,~p}~n", [error, Err]),
 			error
 	end.
 
-receiver(Socket, Sz, Crc32, IoDev, Bin) ->
-  	{NewSz, NewBin} = case gen_udp:recv(Socket, 0, 5000) of
-  		{error, Reason} ->
-  			io:format("Error: ~p~n", [Reason]),
-  			{0, <<>>};
-  		{ok, {_Addr, _Port, Pkt}} ->
-  			case Pkt of
-  				<<"eof">> ->
-  					io:format("~nFile full received~nSize: ~p~n", [Sz]),
-  					file:write(IoDev, Bin),
-  					file:sync(IoDev),
-  					file:close(IoDev),
-  					halt(),
-  					{0, <<>>};
-  				<<"start_over">> ->
-  					io:format("START OVER...~n"),
-  					{0, <<>>};
-  				B ->
-  					{Sz+byte_size(B), iolist_to_binary([Bin, B])}
-  			end
-  	end,
-  	% io:format("Recieved size: ~p~n", [NewSz]),
-	receiver(Socket, NewSz, Crc32, IoDev, NewBin).
+loop(Socket, Sz, Crc32, IoDev, Bin, Cnt) ->
+	receive
+		{udp, Socket, _, _, Pkt} ->
+			loop(Socket, Sz+byte_size(Pkt), Crc32, IoDev, [Bin, Pkt], Cnt+1)
+	after 1000 ->
+		io:format("Принято ~p пакетов~n", [Cnt]),
+		B = iolist_to_binary(Bin),
+		io:format("Sz: ~p~n", [byte_size(B)]),
+		file:write(IoDev, B),
+		file:sync(IoDev),
+		file:close(IoDev),
+		io:format("Результат проверки CRC32: ~p~n", [chech_crc(Crc32)])
+	end.
 
 get_metadata() ->
 	{ok, Args} = init:get_argument(url),
@@ -84,6 +75,11 @@ get_metadata() ->
 	
 	{ok, Group} = inet:parse_address(?utf8(proplists:get_value(<<"group">>, Meta))),
 	{Group, proplists:get_value(<<"crc32">>, Meta)}.
+
+chech_crc(OrgCrc32) ->
+	{ok, B} = file:read_file(?RECVD_FILE),
+	Crc32 = erlang:crc32(B),
+	OrgCrc32 == Crc32.
 
 start_over() ->
 	{ok, Args} = init:get_argument(url),

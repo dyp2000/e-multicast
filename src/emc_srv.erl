@@ -15,7 +15,10 @@
 -include_lib("kernel/include/file.hrl").
 
 %% API
--export([start_link/0]).
+-export([
+	start_link/0,
+	send_file/6
+]).
 
 %% emc_srv callbacks
 -export([init/1,
@@ -42,7 +45,8 @@
 	iodev,
 	crc32,
 	file_size,
-	stime
+	stime,
+	sender
 }).
 
 %%%===================================================================
@@ -88,7 +92,7 @@ init([]) ->
 		{_, _, 0} ->
 			{stop, error_input_args};
 		{File, Group, Speed} ->
-			{ok, Sock} = gen_udp:open(0, [binary]),
+			{ok, Sock} = gen_udp:open(0, [binary, {active, false}, {multicast_ttl, 1}, {multicast_loop,true}, {buffer, 64000000}]),
 			io:format("Socket: ~p~n", [Sock]),
 			
 			Opts = inet:getopts(Sock, [buffer, sndbuf]),
@@ -101,9 +105,11 @@ init([]) ->
 			{ok, FileInfo} = file:read_file_info(File),
 			Sz = FileInfo#file_info.size,
 
+			calc_pkt_count(Sz, Speed),
+
 			{ok, IoDev} = file:open(File, [read, binary]),
 
-			Time = (trunc(1000/(Speed/1500))),
+			Time = (trunc(1000/(Speed/1472))),
 			io:format("send time: ~p~n", [Time]),
 
 			ets:insert(emc, {pos, {bof, 0}}),
@@ -161,17 +167,13 @@ handle_call(_Request, _From, State) ->
 	{noreply, NewState :: #state{}, timeout() | hibernate} |
 	{stop, Reason :: term(), NewState :: #state{}}).
 
-handle_cast({send_block, Bin}, State) ->
-
-	[{time, Time}|_] = ets:match_object(emc, {time, $1}),
-	send_block(State#state.mSocket, State#state.multicast_group, Time, Bin),
-
-	{noreply, State};
-
 handle_cast(start_over, State) ->
-	io:format("Start OVER!~n"),
+	io:format("Передача файла сначала~n"),
+	exit(State#state.sender, start_over),
+	ets:insert(emc, {pos, {bof, 0}}),
 	ets:insert(emc, {start_over, true}),
-	{noreply, State};
+	Timer = erlang:send_after(500, ?SERVER, send_file),
+	{noreply, State#state{sender = 0, send_timer = Timer}};
 
 handle_cast(_Request, State) ->
 	io:format("Unknown request: ~p~n", [_Request]),
@@ -194,39 +196,8 @@ handle_cast(_Request, State) ->
 
 handle_info(send_file, State) ->
 	erlang:cancel_timer(State#state.send_timer),
-	[{start_over, StartOver}|_] = ets:match_object(emc, {start_over, '$1'}),
-
-	case StartOver of
-		true -> 
-			io:format("Start over~n"),
-			ets:insert(emc, {pos, {bof, 0}}),
-			ets:insert(emc, {start_over, false});
-		false -> 
-	 		false
-	end,
-
-	[{pos, Pos}|_] = ets:match_object(emc, {pos, '$1'}),
-	Res = case file:pread(State#state.iodev, Pos, State#state.speed) of
-	 	{ok, Bin} ->
-	 		send_block(State#state.mSocket, State#state.multicast_group, State#state.stime, Bin),
-			{bof, P} = Pos,
-			ets:insert(emc, {pos, {bof, P+State#state.speed}});
-		eof ->
-			io:format("<EOF>~n"),
-			ets:insert(emc, {pos, {bof, 0}}),
-	 		send_block(State#state.mSocket, State#state.multicast_group, State#state.stime, <<"eof">>);
-	 		% halt();
-		{error, _Reason} ->
-			error
-	end,
-	case Res of
-		error ->
-			io:format("file read error"),
-			{stop, file_read_error, State};
-		_ ->
-			Timer = erlang:send_after(1, ?SERVER, send_file),
-			{noreply, State#state{send_timer = Timer}}
-	end;
+	Pid = spawn(emc_srv, send_file, [State#state.mSocket, State#state.multicast_group, State#state.iodev, State#state.speed, State#state.stime, 0]),
+	{noreply, State#state{sender = Pid}};
 
 handle_info(_Info, State) ->
 	io:format("Unknown info: ~p~n", [_Info]),
@@ -292,12 +263,57 @@ parse_args() ->
 	io:format("Speed: ~p KByte/sec~n", [round(Speed/1024)]),
 	{File, Grp, Speed}.
 
-send_block(_Socket, _Group, _Time, <<>>) ->
-	ok;
-send_block(Socket, Group, Time, <<Block:1472/binary, Rest/binary>>) ->
-	gen_udp:send(Socket, Group, ?MCAST_PORT, Block),
-	timer:sleep(Time),
-	send_block(Socket, Group, Time, Rest);
-send_block(Socket, Group, _Time, <<Rest/binary>>) ->
-	gen_udp:send(Socket, Group, ?MCAST_PORT, Rest).
+calc_pkt_count(Sz, Speed) ->
+	Ph = Sz div Speed, 
+	Pt = Sz rem Speed,
+	io:format("Всего ~p частей по ~p байт~n", [Ph, Speed]),
+	Pc = calc_parts_pkt_count(Ph, Pt, Speed, 0),
+	io:format("Всего пакетов: ~p~n", [Pc]).
+
+calc_parts_pkt_count(0, Pt, _Speed, Acc) -> 
+	P1 = Pt div 1472,
+	P2 = Pt rem 1472,
+	P3 = if
+		   P2 > 0 -> 1;
+		   true -> 0
+		 end,
+	Acc+P1+P3;
+calc_parts_pkt_count(P, Pt, Speed, Acc) ->
+	P1 = Speed div 1472,
+	P2 = Speed rem 1472,
+	P3 = if
+		   P2 > 0 -> 1;
+		   true -> 0
+		 end,
+	calc_parts_pkt_count(P-1, Pt, Speed, Acc+P1+P3).
+
+send_block(_Socket, _Group, _Time, <<>>, C) ->
+	C;
+send_block(Socket, Group, Time, <<Block:1472/binary, Rest/binary>>, C) ->
+	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, Block),
+	timer:sleep(trunc(Time/2)),
+	send_block(Socket, Group, Time, Rest, C+1);
+send_block(Socket, Group, Time, <<Rest/binary>>, C) ->
+	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, Rest),
+	timer:sleep(trunc(Time/2)),
+	send_block(Socket, Group, Time, <<>>, C+1).
+
+
+send_file(Socket, Group, IoDev, Speed, Time, C) ->
+	[{pos, Pos}|_] = ets:match_object(emc, {pos, '$1'}),
+	case file:pread(IoDev, Pos, Speed) of
+	 	{ok, Bin} ->
+	 		Cnt = send_block(Socket, Group, Time, Bin, 0),
+			Sz = byte_size(Bin),
+			{bof, P} = Pos,
+			ets:insert(emc, {pos, {bof, P + Sz}}),
+			send_file(Socket, Group, IoDev, Speed, Time, C+Cnt);
+		eof ->
+			io:format("<EOF>~n"),
+			io:format("Отправлено ~p пакетов~n", [C]),
+			ets:insert(emc, {pos, {bof, 0}});
+	 		% send_block(Socket, Group, Time, <<"eof">>);
+		{error, _Reason} ->
+			error
+	end.
 
