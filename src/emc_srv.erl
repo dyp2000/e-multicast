@@ -92,7 +92,7 @@ init([]) ->
 		{_, _, 0} ->
 			{stop, error_input_args};
 		{File, Group, Speed} ->
-			{ok, Sock} = gen_udp:open(0, [binary, {active, false}, {multicast_ttl, 1}, {multicast_loop,true}, {buffer, 64000000}]),
+			{ok, Sock} = gen_udp:open(0, [binary, {active, false}, {multicast_ttl, 1}, {multicast_loop,true}, {buffer, 16*1024*1024}]),
 			io:format("Socket: ~p~n", [Sock]),
 			
 			Opts = inet:getopts(Sock, [buffer, sndbuf]),
@@ -311,8 +311,8 @@ send_file(Socket, Group, IoDev, Speed, Time, C) ->
 		eof ->
 			io:format("<EOF>~n"),
 			io:format("Отправлено ~p пакетов~n", [C]),
-			ets:insert(emc, {pos, {bof, 0}});
-	 		% send_block(Socket, Group, Time, <<"eof">>);
+			ets:insert(emc, {pos, {bof, 0}}),
+	 		gen_server:cast(?SERVER, start_over);
 		{error, _Reason} ->
 			error
 	end.
