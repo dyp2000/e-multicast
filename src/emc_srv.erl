@@ -312,6 +312,7 @@ send_file(Socket, Group, IoDev, Speed, Time, C) ->
 			io:format("<EOF>~n"),
 			io:format("Отправлено ~p пакетов~n", [C]),
 			ets:insert(emc, {pos, {bof, 0}}),
+			timer:sleep(2000),
 	 		gen_server:cast(?SERVER, start_over);
 		{error, _Reason} ->
 			error
