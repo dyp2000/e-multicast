@@ -37,28 +37,48 @@ start() ->
 	]),
 	case Res of
 		{ok, Sock} ->
-			inet:setopts(Sock, [{buffer, 16*1024*1024}, {recbuf, 1024*1024}]),
+			inet:setopts(Sock, [{recbuf, 1024*1024}]),
 			Opts = inet:getopts(Sock, [buffer, recbuf]),
 			io:format("Opts: ~p~n", [Opts]),
 			{ok, IoDev} = file:open(FileName, [write, binary]),
-			loop(Sock, 0, FileName, Crc32, IoDev, <<>>, 0);
+			loop(Sock, 0, FileName, Crc32, IoDev, [], 0, 0, []);
 		{error, Err} ->
 			io:format("Error: {~p,~p}~n", [error, Err]),
 			error
 	end.
 
-loop(Socket, Sz, FileName, Crc32, IoDev, Bin, Cnt) ->
+loop(Socket, Sz, FileName, Crc32, IoDev, Acc, Cnt, Pi, LPC) ->
 	receive
 		{udp, Socket, _, _, Pkt} ->
-			loop(Socket, Sz+byte_size(Pkt), FileName, Crc32, IoDev, [Bin, parse_pkt(Pkt)], Cnt+1)
+			{Ci, B} = parse_pkt(Pkt),
+			Lost = lost(Pi, Ci),
+			loop(Socket, Sz+byte_size(Pkt), FileName, Crc32, IoDev, [{Ci, B}|Acc], Cnt+1, Ci, [Lost|LPC])
 	after 1000 ->
 		io:format("Принято ~p пакетов~n", [Cnt]),
-		B = iolist_to_binary(Bin),
-		io:format("Sz: ~p~n", [byte_size(B)]),
-		file:write(IoDev, B),
+		io:format("Потеряны пакеты: ~p~n", [lists:reverse(lists:flatten(LPC))]),
+
+		Bin = prepare_bin(Acc),
+
+		io:format("Sz: ~p~n", [byte_size(Bin)]),
+		file:write(IoDev, Bin),
 		file:sync(IoDev),
 		file:close(IoDev),
 		io:format("Результат проверки CRC32: ~p~n", [check_crc(FileName, Crc32)])
+	end.
+
+prepare_bin(Packets) ->	iolist_to_binary([B || {_I, B} <- lists:sort(Packets)]).
+
+parse_pkt(Bin) ->
+	<<Ci:32/integer, Rest/binary>> = Bin,
+	{Ci, Rest}.
+
+lost(Pi, Ci) ->
+	Step = Ci - Pi,
+	if
+		Step > 1 ->
+			lists:seq(Pi+1, Ci-1, 1);
+		true ->
+			[]
 	end.
 
 get_metadata() ->
@@ -89,9 +109,3 @@ check_crc(FileName, OrgCrc32) ->
 	{ok, B} = file:read_file("./" ++ FileName),
 	Crc32 = erlang:crc32(B),
 	OrgCrc32 == Crc32.
-
-parse_pkt(Bin) ->
-	<<Idx/integer, Rest/binary>> = Bin,
-	Rest.
-
-

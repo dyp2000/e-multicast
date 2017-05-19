@@ -17,7 +17,7 @@
 %% API
 -export([
 	start_link/0,
-	send_file/6
+	send_file/5
 ]).
 
 %% emc_srv callbacks
@@ -46,7 +46,8 @@
 	crc32,
 	file_size,
 	stime,
-	sender
+	sender,
+	pktmap
 }).
 
 %%%===================================================================
@@ -102,6 +103,8 @@ init([]) ->
 			Crc32 = erlang:crc32(B),
 			io:format("file crc32: ~p~n", [Crc32]),
 
+			PktMap = pkt_map(B, 0, 0, []),
+
 			Sz = filelib:file_size(File),
 			calc_pkt_count(Sz, Speed),
 
@@ -123,7 +126,8 @@ init([]) ->
 				iodev = IoDev, 
 				crc32 = Crc32,
 				stime = Time,
-				file_size = Sz}
+				file_size = Sz,
+				pktmap = PktMap}
 			}
 	end.
 
@@ -195,7 +199,13 @@ handle_cast(_Request, State) ->
 
 handle_info(send_file, State) ->
 	erlang:cancel_timer(State#state.send_timer),
-	Pid = spawn_link(emc_srv, send_file, [State#state.mSocket, State#state.multicast_group, State#state.iodev, State#state.speed, State#state.stime, 0]),
+	Pid = spawn_link(emc_srv, send_file, [
+		State#state.mSocket, 
+		State#state.multicast_group, 
+		State#state.iodev, 
+		State#state.stime, 
+		0
+	]),
 	{noreply, State#state{sender = Pid}};
 
 handle_info(_Info, State) ->
@@ -270,44 +280,44 @@ calc_pkt_count(Sz, Speed) ->
 	io:format("Всего пакетов: ~p~n", [Pc]).
 
 calc_parts_pkt_count(0, Pt, _Speed, Acc) -> 
-	P1 = Pt div 1472,
-	P2 = Pt rem 1472,
+	P1 = Pt div 1468,
+	P2 = Pt rem 1468,
 	P3 = if
 		   P2 > 0 -> 1;
 		   true -> 0
 		 end,
 	Acc+P1+P3;
 calc_parts_pkt_count(P, Pt, Speed, Acc) ->
-	P1 = Speed div 1472,
-	P2 = Speed rem 1472,
+	P1 = Speed div 1468,
+	P2 = Speed rem 1468,
 	P3 = if
 		   P2 > 0 -> 1;
 		   true -> 0
 		 end,
 	calc_parts_pkt_count(P-1, Pt, Speed, Acc+P1+P3).
 
-make_pkt(Bin, Cnt) -> <<Cnt/integer, Bin/binary>>.
+make_pkt(Cnt, Bin) -> <<Cnt:32/integer, Bin/binary>>.
 
-send_block(_Socket, _Group, _Time, <<>>, C) ->
-	C;
-send_block(Socket, Group, Time, <<Block:1468/binary, Rest/binary>>, C) ->
-	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(Block, C)),
-	timer:sleep(trunc(Time/2)),
-	send_block(Socket, Group, Time, Rest, C+1);
-send_block(Socket, Group, Time, <<Rest/binary>>, C) ->
-	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(Rest, C)),
-	timer:sleep(trunc(Time/2)),
-	send_block(Socket, Group, Time, <<>>, C+1).
+% send_block(_Socket, _Group, _Time, <<>>, C) ->
+% 	C;
+% send_block(Socket, Group, Time, <<Block:1468/binary, Rest/binary>>, C) ->
+% 	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(Block, C)),
+% 	timer:sleep(trunc(Time)),
+% 	send_block(Socket, Group, Time, Rest, C+1);
+% send_block(Socket, Group, Time, <<Rest/binary>>, C) ->
+% 	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(Rest, C)),
+% 	timer:sleep(trunc(Time)),
+% 	send_block(Socket, Group, Time, <<>>, C+1).
 
-send_file(Socket, Group, IoDev, Speed, Time, C) ->
+send_file(Socket, Group, IoDev, Time, C) ->
 	[{pos, Pos}|_] = ets:match_object(emc, {pos, '$1'}),
-	case file:pread(IoDev, Pos, Speed) of
+	case file:pread(IoDev, Pos, 1468) of
 	 	{ok, Bin} ->
-	 		Cnt = send_block(Socket, Group, Time, Bin, 0),
-			Sz = byte_size(Bin),
+			ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(C, Bin)),
 			{bof, P} = Pos,
-			ets:insert(emc, {pos, {bof, P + Sz}}),
-			send_file(Socket, Group, IoDev, Speed, Time, C+Cnt);
+			ets:insert(emc, {pos, {bof,  P + 1468}}),
+			timer:sleep(trunc(Time)),
+			send_file(Socket, Group, IoDev, Time, C+1);	 		
 		eof ->
 			io:format("<EOF>~n"),
 			io:format("Отправлено ~p пакетов~n", [C]),
@@ -317,3 +327,32 @@ send_file(Socket, Group, IoDev, Speed, Time, C) ->
 		{error, _Reason} ->
 			error
 	end.
+
+
+% send_file(Socket, Group, IoDev, Speed, Time, C) ->
+% 	[{pos, Pos}|_] = ets:match_object(emc, {pos, '$1'}),
+% 	case file:pread(IoDev, Pos, Speed) of
+% 	 	{ok, Bin} ->
+% 			Sz = byte_size(Bin),
+% 			{bof, P} = Pos,
+% 	 		Cnt = send_block(Socket, Group, Time, Bin, C),
+% 			ets:insert(emc, {pos, {bof, P + Sz}}),
+% 			send_file(Socket, Group, IoDev, Speed, Time, Cnt);
+% 		eof ->
+% 			io:format("<EOF>~n"),
+% 			io:format("Отправлено ~p пакетов~n", [C]),
+% 			ets:insert(emc, {pos, {bof, 0}}),
+% 			timer:sleep(2000),
+% 	 		gen_server:cast(?SERVER, start_over);
+% 		{error, _Reason} ->
+% 			error
+% 	end.
+
+pkt_map(<<>>, _, _, Acc) -> 
+	lists:sort(Acc);
+pkt_map(<<Pkt:1468/binary, Tail/binary>>, Idx, Pos, Acc) ->
+	pkt_map(Tail, Idx+1,  Pos + byte_size(Pkt), [{Idx+1, Pos}|Acc]);
+pkt_map(<<Pkt/binary>>, Idx, Pos, Acc) ->
+	pkt_map(<<>>, Idx+1, Pos + byte_size(Pkt), [{Idx+1, Pos}|Acc]).
+
+
