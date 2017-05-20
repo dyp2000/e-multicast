@@ -93,7 +93,13 @@ init([]) ->
 		{_, _, 0} ->
 			{stop, error_input_args};
 		{File, Group, Speed} ->
-			{ok, Sock} = gen_udp:open(0, [binary, {active, false}, {multicast_ttl, 1}, {multicast_loop,true}, {buffer, 16*1024*1024}]),
+			{ok, Sock} = gen_udp:open(0, [
+				binary, 
+				{active, false}, 
+				{multicast_ttl, 1}, 
+				{multicast_loop,true}
+				% {buffer, 16*1024*1024}
+			]),
 			io:format("Socket: ~p~n", [Sock]),
 			
 			Opts = inet:getopts(Sock, [buffer, sndbuf]),
@@ -298,17 +304,6 @@ calc_parts_pkt_count(P, Pt, Speed, Acc) ->
 
 make_pkt(Cnt, Bin) -> <<Cnt:32/integer, Bin/binary>>.
 
-% send_block(_Socket, _Group, _Time, <<>>, C) ->
-% 	C;
-% send_block(Socket, Group, Time, <<Block:1468/binary, Rest/binary>>, C) ->
-% 	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(Block, C)),
-% 	timer:sleep(trunc(Time)),
-% 	send_block(Socket, Group, Time, Rest, C+1);
-% send_block(Socket, Group, Time, <<Rest/binary>>, C) ->
-% 	ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(Rest, C)),
-% 	timer:sleep(trunc(Time)),
-% 	send_block(Socket, Group, Time, <<>>, C+1).
-
 send_file(Socket, Group, IoDev, Time, C) ->
 	[{pos, Pos}|_] = ets:match_object(emc, {pos, '$1'}),
 	case file:pread(IoDev, Pos, 1468) of
@@ -327,26 +322,6 @@ send_file(Socket, Group, IoDev, Time, C) ->
 		{error, _Reason} ->
 			error
 	end.
-
-
-% send_file(Socket, Group, IoDev, Speed, Time, C) ->
-% 	[{pos, Pos}|_] = ets:match_object(emc, {pos, '$1'}),
-% 	case file:pread(IoDev, Pos, Speed) of
-% 	 	{ok, Bin} ->
-% 			Sz = byte_size(Bin),
-% 			{bof, P} = Pos,
-% 	 		Cnt = send_block(Socket, Group, Time, Bin, C),
-% 			ets:insert(emc, {pos, {bof, P + Sz}}),
-% 			send_file(Socket, Group, IoDev, Speed, Time, Cnt);
-% 		eof ->
-% 			io:format("<EOF>~n"),
-% 			io:format("Отправлено ~p пакетов~n", [C]),
-% 			ets:insert(emc, {pos, {bof, 0}}),
-% 			timer:sleep(2000),
-% 	 		gen_server:cast(?SERVER, start_over);
-% 		{error, _Reason} ->
-% 			error
-% 	end.
 
 pkt_map(<<>>, _, _, Acc) -> 
 	lists:sort(Acc);

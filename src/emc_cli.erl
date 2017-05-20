@@ -24,27 +24,32 @@
 %%%===================================================================
 
 start() ->
-	{Group, FileName, Crc32} = get_metadata(),
-	start_over(),
-	Res = gen_udp:open(?MCAST_PORT, [
-		binary,
-		{active, true},
-		{reuseaddr, true},
-		{ip, Group},
-		{multicast_ttl, 1},
-		{multicast_loop, false},
-		{add_membership, {Group, {0,0,0,0}}}
-	]),
-	case Res of
-		{ok, Sock} ->
-			inet:setopts(Sock, [{recbuf, 1024*1024}]),
-			Opts = inet:getopts(Sock, [buffer, recbuf]),
-			io:format("Opts: ~p~n", [Opts]),
-			{ok, IoDev} = file:open(FileName, [write, binary]),
-			loop(Sock, 0, FileName, Crc32, IoDev, [], 0, 0, []);
-		{error, Err} ->
-			io:format("Error: {~p,~p}~n", [error, Err]),
-			error
+	case get_metadata() of
+		{Group, FileName, Crc32} ->
+			start_over(),
+			Res = gen_udp:open(?MCAST_PORT, [
+				binary,
+				{active, true},
+				{reuseaddr, true},
+				{ip, Group},
+				{multicast_ttl, 1},
+				{multicast_loop, false},
+				{add_membership, {Group, {0,0,0,0}}}
+			]),
+			case Res of
+				{ok, Sock} ->
+					inet:setopts(Sock, [{recbuf, 128*1024}]),
+					Opts = inet:getopts(Sock, [buffer, recbuf]),
+					io:format("Opts: ~p~n", [Opts]),
+					{ok, IoDev} = file:open(FileName, [write, binary]),
+					loop(Sock, 0, FileName, Crc32, IoDev, [], 0, 0, []);
+				{error, Err} ->
+					io:format("Error: {~p,~p}~n", [error, Err]),
+					error
+			end;
+	{error, Reason} ->
+		io:format("ERROR: ~p~n", [Reason]),
+		halt()
 	end.
 
 loop(Socket, Sz, FileName, Crc32, IoDev, Acc, Cnt, Pi, LPC) ->
@@ -72,14 +77,9 @@ parse_pkt(Bin) ->
 	<<Ci:32/integer, Rest/binary>> = Bin,
 	{Ci, Rest}.
 
-lost(Pi, Ci) ->
-	Step = Ci - Pi,
-	if
-		Step > 1 ->
-			lists:seq(Pi+1, Ci-1, 1);
-		true ->
-			[]
-	end.
+lost(Pi, Ci) -> lost(Pi, Ci, Ci - Pi).
+lost(Pi, Ci, Step) when Step > 1 -> lists:seq(Pi+1, Ci-1, 1);
+lost(_, _, _) -> [].
 
 get_metadata() ->
 	{ok, Args} = init:get_argument(url),
@@ -87,13 +87,16 @@ get_metadata() ->
 	io:fwrite("Url: ~p~n", [Url]),
 
 	inets:start(),
-	{ok, {_Status, _Header, Data}} = httpc:request(Url),
-	inets:stop(),
-	{[{<<"result">>, {Meta}}]} = jsonx:decode(list_to_binary(Data)),
-	io:fwrite("~p~n", [Meta]),
-	
-	{ok, Group} = inet:parse_address(?utf8(proplists:get_value(<<"group">>, Meta))),
-	{Group, proplists:get_value(<<"filename">>, Meta), proplists:get_value(<<"crc32">>, Meta)}.
+	case httpc:request(Url) of
+		{ok, {_Status, _Header, Data}} ->
+			inets:stop(),
+			{[{<<"result">>, {Meta}}]} = jsonx:decode(list_to_binary(Data)),
+			io:fwrite("~p~n", [Meta]),
+			{ok, Group} = inet:parse_address(?utf8(proplists:get_value(<<"group">>, Meta))),
+			{Group, proplists:get_value(<<"filename">>, Meta), proplists:get_value(<<"crc32">>, Meta)};
+		{error, Reason} ->
+			{error, Reason}
+	end.
 
 start_over() ->
 	{ok, Args} = init:get_argument(url),
@@ -101,9 +104,13 @@ start_over() ->
 	{ok, {Scheme, _, Host, Port, _, _}} = http_uri:parse(Url),
 	Url2 = lists:flatten(io_lib:fwrite("~p\://~s\:~p/data/start_over", [Scheme, Host, Port])),
 	io:fwrite("Url2: ~s~n", [Url2]),
-	inets:start(),
-	{ok, {_Status, _Header, _Data}} = httpc:request(Url2),
-	inets:stop().
+	case inets:start() of
+		ok ->
+			{ok, {_Status, _Header, _Data}} = httpc:request(Url2),
+			inets:stop();
+		{error, Reason} ->
+			{error, Reason}
+	end.
 
 check_crc(FileName, OrgCrc32) ->
 	{ok, B} = file:read_file("./" ++ FileName),
