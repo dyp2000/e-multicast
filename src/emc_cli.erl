@@ -16,7 +16,8 @@
 
 %% API
 -export([
-	start/0
+	start/0,
+	get_host/0
 ]).
 
 %%%===================================================================
@@ -24,6 +25,7 @@
 %%%===================================================================
 
 start() ->
+	inets:start(),
 	case get_metadata() of
 		{Group, FileName, Crc32} ->
 			start_over(),
@@ -58,13 +60,18 @@ loop(Socket, Sz, FileName, Crc32, IoDev, Acc, Cnt, Pi, LPC) ->
 			{Ci, B} = parse_pkt(Pkt),
 			Lost = lost(Pi, Ci),
 			request_lost(Lost),
-			loop(Socket, Sz+byte_size(Pkt), FileName, Crc32, IoDev, [{Ci, B}|Acc], Cnt+1, Ci, [Lost|LPC])
+			I = if
+				Ci < Pi -> 
+					io:format("Recvd lost: ~p~n", [Ci]),
+					Pi;
+				true -> Ci
+			end,
+			loop(Socket, Sz+byte_size(Pkt), FileName, Crc32, IoDev, [{Ci, B}|Acc], Cnt+1, I, [Lost|LPC])
+
 	after 1000 ->
 		io:format("Принято ~p пакетов~n", [Cnt]),
-		io:format("Потеряны пакеты: ~p~n", [lists:reverse(lists:flatten(LPC))]),
-
+		io:format("Потеряны пакеты: ~p~n", [lists:sort(lists:flatten(LPC))]),
 		Bin = prepare_bin(Acc),
-
 		io:format("Sz: ~p~n", [byte_size(Bin)]),
 		file:write(IoDev, Bin),
 		file:sync(IoDev),
@@ -76,11 +83,14 @@ loop(Socket, Sz, FileName, Crc32, IoDev, Acc, Cnt, Pi, LPC) ->
 prepare_bin(Packets) ->	iolist_to_binary([B || {_I, B} <- lists:sort(Packets)]).
 
 parse_pkt(Bin) ->
-	<<Ci:32/integer, Rest/binary>> = Bin,
-	{Ci, Rest}.
+	<<Ci:32/integer, Data/binary>> = Bin,
+	{Ci, Data}.
 
 lost(Pi, Ci) -> lost(Pi, Ci, Ci - Pi).
-lost(Pi, Ci, Step) when Step > 1 -> lists:seq(Pi+1, Ci-1, 1);
+lost(Pi, Ci, Step) when (Step > 1) -> 
+	Lost = lists:seq(Pi+1, Ci-1, 1),
+	io:format("Lost: ~p~n", [Lost]),
+	Lost;
 lost(_, _, _) -> [].
 
 get_metadata() ->
@@ -88,10 +98,8 @@ get_metadata() ->
 	Url = lists:flatten(Args),
 	io:fwrite("Url: ~p~n", [Url]),
 
-	inets:start(),
 	case httpc:request(Url) of
 		{ok, {_Status, _Header, Data}} ->
-			inets:stop(),
 			{[{<<"result">>, {Meta}}]} = jsonx:decode(list_to_binary(Data)),
 			io:fwrite("~p~n", [Meta]),
 			{ok, Group} = inet:parse_address(?utf8(proplists:get_value(<<"group">>, Meta))),
@@ -103,31 +111,12 @@ get_metadata() ->
 start_over() ->
 	{Scheme, Host, Port} = get_host(),
 	Url2 = lists:flatten(io_lib:fwrite("~p\://~s\:~p/start_over", [Scheme, Host, Port])),
-	io:fwrite("Url2: ~s~n", [Url2]),
-	ok = inets:start(),
-	{ok, {_Status, _Header, _Data}} = httpc:request(Url2),
-	inets:stop().
+	{ok, {_Status, _Header, _Data}} = httpc:request(Url2).
 
 check_crc(FileName, OrgCrc32) ->
 	{ok, B} = file:read_file("./" ++ FileName),
 	Crc32 = erlang:crc32(B),
 	OrgCrc32 == Crc32.
-
-request_lost([]) -> ok;
-request_lost(Lost) ->
-	io:format("Запросить потерянные пакеты: ~p~n", [Lost]),
-	ok = inets:start(),
-	{Scheme, Host, Port} = get_host(),
-
-	URL = lists:flatten(io_lib:fwrite("~p\://~s\:~p/req_lost", [Scheme, Host, Port])),
-	io:format("URL: ~p~n", [URL]),
-
-	Res = httpc:request(post, {URL, [], "application/json", jsonx:encode(Lost)}, [], []),
-	% Res = httpc:request(URL),
-	io:format("~p~n", [Res]),
-
-
-	inets:stop().
 
 get_host() ->
 	{ok, Args} = init:get_argument(url),
@@ -135,3 +124,9 @@ get_host() ->
 	{ok, {Scheme, _, Host, Port, _, _}} = http_uri:parse(Url),
 	{Scheme, Host, Port}.
 
+request_lost([]) -> ok;
+request_lost(Lost) ->
+	io:format("Запросить потерянные пакеты: ~p~n", [Lost]),
+	{Scheme, Host, Port} = get_host(),
+	URL = lists:flatten(io_lib:fwrite("~p\://~s\:~p/req_lost", [Scheme, Host, Port])),
+	{ok, _} = httpc:request(post, {URL, [], "multipart/form-data", jsonx:encode(Lost)}, [], []).

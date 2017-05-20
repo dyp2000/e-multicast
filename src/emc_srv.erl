@@ -17,7 +17,8 @@
 %% API
 -export([
 	start_link/0,
-	send_file/5
+	send_file/5,
+	send_lost/2
 ]).
 
 %% emc_srv callbacks
@@ -32,6 +33,7 @@
 
 -define(MCAST_GROUP, {224,2,2,4}).
 -define(MCAST_PORT, 1234).
+-define(PKTSZ, 1468).
 
 -define(utf8(Chars), unicode:characters_to_list(Chars)).
 -define(chrBin(Chars), unicode:characters_to_binary(Chars)).
@@ -96,31 +98,22 @@ init([]) ->
 			{ok, Sock} = gen_udp:open(0, [
 				binary, 
 				{active, false}, 
-				{multicast_ttl, 1}, 
-				{multicast_loop,true}
+				{multicast_ttl, 1}
+				% {multicast_loop,true}
 			]),
 			io:format("Socket: ~p~n", [Sock]),
-			
 			Opts = inet:getopts(Sock, [buffer, sndbuf]),
 			io:format("Opts: ~p~n", [Opts]),
-
 			{ok, B} = file:read_file(File),
 			Crc32 = erlang:crc32(B),
 			io:format("file crc32: ~p~n", [Crc32]),
-
 			PktMap = pkt_map(B, 0, 0, []),
-
 			Sz = filelib:file_size(File),
-			% calc_pkt_count(Sz, Speed),
-
 			{ok, IoDev} = file:open(File, [read, binary]),
-
 			Time = (trunc(1000/(Speed/1472))),
 			io:format("send time: ~p~n", [Time]),
-
 			ets:insert(emc, {pos, {bof, 0}}),
 			ets:insert(emc, {start_over, false}),
-
 			Timer = erlang:send_after(500, ?SERVER, send_file),
 			{ok, #state{
 				mSocket = Sock, 
@@ -182,6 +175,10 @@ handle_cast(start_over, State) ->
 	ets:insert(emc, {start_over, true}),
 	Timer = erlang:send_after(500, ?SERVER, send_file),
 	{noreply, State#state{sender = 0, send_timer = Timer}};
+
+handle_cast({send_lost, Lost}, State) ->
+	spawn(emc_srv, send_lost, [Lost, State]),
+	{noreply, State};
 
 handle_cast(_Request, State) ->
 	io:format("Unknown request: ~p~n", [_Request]),
@@ -277,46 +274,22 @@ parse_args() ->
 	io:format("Speed: ~p KByte/sec~n", [round(Speed/1024)]),
 	{File, Grp, Speed}.
 
-% calc_pkt_count(Sz, Speed) ->
-% 	Ph = Sz div Speed, 
-% 	Pt = Sz rem Speed,
-% 	io:format("Всего ~p частей по ~p байт~n", [Ph, Speed]),
-% 	Pc = calc_parts_pkt_count(Ph, Pt, Speed, 0),
-% 	io:format("Всего пакетов: ~p~n", [Pc]).
-
-% calc_parts_pkt_count(0, Pt, _Speed, Acc) -> 
-% 	P1 = Pt div 1468,
-% 	P2 = Pt rem 1468,
-% 	P3 = if
-% 		   P2 > 0 -> 1;
-% 		   true -> 0
-% 		 end,
-% 	Acc+P1+P3;
-% calc_parts_pkt_count(P, Pt, Speed, Acc) ->
-% 	P1 = Speed div 1468,
-% 	P2 = Speed rem 1468,
-% 	P3 = if
-% 		   P2 > 0 -> 1;
-% 		   true -> 0
-% 		 end,
-% 	calc_parts_pkt_count(P-1, Pt, Speed, Acc+P1+P3).
-
-make_pkt(Cnt, Bin) -> <<Cnt:32/integer, Bin/binary>>.
+make_pkt(Ci, Bin) -> <<Ci:32/integer, Bin/binary>>.
 
 send_file(Socket, Group, IoDev, Time, C) ->
 	[{pos, Pos}|_] = ets:match_object(emc, {pos, '$1'}),
-	case file:pread(IoDev, Pos, 1468) of
+	case file:pread(IoDev, Pos, ?PKTSZ) of
 	 	{ok, Bin} ->
 			ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(C, Bin)),
 			{bof, P} = Pos,
-			ets:insert(emc, {pos, {bof,  P + 1468}}),
+			ets:insert(emc, {pos, {bof,  P + ?PKTSZ}}),
 			timer:sleep(trunc(Time)),
 			send_file(Socket, Group, IoDev, Time, C+1);	 		
 		eof ->
 			io:format("<EOF>~n"),
 			io:format("Отправлено ~p пакетов~n", [C]),
 			ets:insert(emc, {pos, {bof, 0}}),
-			timer:sleep(2000),
+			timer:sleep(5000),
 	 		gen_server:cast(?SERVER, start_over);
 		{error, _Reason} ->
 			error
@@ -324,9 +297,27 @@ send_file(Socket, Group, IoDev, Time, C) ->
 
 pkt_map(<<>>, _, _, Acc) -> 
 	lists:sort(Acc);
-pkt_map(<<Pkt:1468/binary, Tail/binary>>, Idx, Pos, Acc) ->
-	pkt_map(Tail, Idx+1,  Pos + byte_size(Pkt), [{Idx+1, Pos}|Acc]);
+pkt_map(<<Pkt:?PKTSZ/binary, Tail/binary>>, Idx, Pos, Acc) ->
+	pkt_map(Tail, Idx+1,  Pos + byte_size(Pkt), [{Idx, Pos}|Acc]);
 pkt_map(<<Pkt/binary>>, Idx, Pos, Acc) ->
-	pkt_map(<<>>, Idx+1, Pos + byte_size(Pkt), [{Idx+1, Pos}|Acc]).
+	pkt_map(<<>>, Idx+1, Pos + byte_size(Pkt), [{Idx, Pos}|Acc]).
 
+send_lost(Lost, State) ->
+	{ok, Sock} = gen_udp:open(0),
+	lists:foreach(
+		fun(I) -> 
+			Pos = proplists:get_value(I, State#state.pktmap),
+			send_lost(Sock, State#state.multicast_group, State#state.iodev, I, Pos)
+		end, 
+	Lost).
 
+send_lost(Socket, Group, IoDev, Idx, Pos) ->
+	io:format("send lost: ~p pos: ~p~n",[Idx, Pos]),
+	case file:pread(IoDev, {bof, Pos}, ?PKTSZ) of
+		{ok, Bin} ->
+			ok = gen_udp:send(Socket, Group, ?MCAST_PORT, make_pkt(Idx, Bin));
+		eof ->
+			eof;
+		{error, _Reason} ->
+			error
+	end.

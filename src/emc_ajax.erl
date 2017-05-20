@@ -76,10 +76,9 @@ ajax(<<"POST">>, <<"/req_lost">>, Req, State) ->
 		true -> 
 			case cowboy_req:body_qs(Req) of
 				{ok, PostVals, Req2} ->
-					io:format("Post: ~p~n", [PostVals]),
-
-					
-
+					% io:format("Post: ~p~n", [PostVals]),
+					[{Bin,_} |_] = PostVals,
+					gen_server:cast(emc_srv, {send_lost, jsonx:decode(Bin)}),
 					?AJAX_REPLY(200, jsonx:encode([{result, ok}]), State),
 					{Req2, State};
 				{error, Req2} ->
