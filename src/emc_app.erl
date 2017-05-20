@@ -54,7 +54,9 @@ routes_web() ->
 	[
 		{'_', 
 			[
-				{"/data/:command", emc_rest, []},
+				{"/get_meta", emc_ajax, []},
+				{"/start_over", emc_ajax, []},
+				{"/req_lost", emc_ajax, []},
 				{"/", cowboy_static, {file, "./html/index.html"}},
 				{"/[...]", cowboy_static, {dir, "./html"}}
 			]

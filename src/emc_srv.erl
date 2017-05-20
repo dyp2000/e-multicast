@@ -98,7 +98,6 @@ init([]) ->
 				{active, false}, 
 				{multicast_ttl, 1}, 
 				{multicast_loop,true}
-				% {buffer, 16*1024*1024}
 			]),
 			io:format("Socket: ~p~n", [Sock]),
 			
@@ -112,7 +111,7 @@ init([]) ->
 			PktMap = pkt_map(B, 0, 0, []),
 
 			Sz = filelib:file_size(File),
-			calc_pkt_count(Sz, Speed),
+			% calc_pkt_count(Sz, Speed),
 
 			{ok, IoDev} = file:open(File, [read, binary]),
 
@@ -278,29 +277,29 @@ parse_args() ->
 	io:format("Speed: ~p KByte/sec~n", [round(Speed/1024)]),
 	{File, Grp, Speed}.
 
-calc_pkt_count(Sz, Speed) ->
-	Ph = Sz div Speed, 
-	Pt = Sz rem Speed,
-	io:format("Всего ~p частей по ~p байт~n", [Ph, Speed]),
-	Pc = calc_parts_pkt_count(Ph, Pt, Speed, 0),
-	io:format("Всего пакетов: ~p~n", [Pc]).
+% calc_pkt_count(Sz, Speed) ->
+% 	Ph = Sz div Speed, 
+% 	Pt = Sz rem Speed,
+% 	io:format("Всего ~p частей по ~p байт~n", [Ph, Speed]),
+% 	Pc = calc_parts_pkt_count(Ph, Pt, Speed, 0),
+% 	io:format("Всего пакетов: ~p~n", [Pc]).
 
-calc_parts_pkt_count(0, Pt, _Speed, Acc) -> 
-	P1 = Pt div 1468,
-	P2 = Pt rem 1468,
-	P3 = if
-		   P2 > 0 -> 1;
-		   true -> 0
-		 end,
-	Acc+P1+P3;
-calc_parts_pkt_count(P, Pt, Speed, Acc) ->
-	P1 = Speed div 1468,
-	P2 = Speed rem 1468,
-	P3 = if
-		   P2 > 0 -> 1;
-		   true -> 0
-		 end,
-	calc_parts_pkt_count(P-1, Pt, Speed, Acc+P1+P3).
+% calc_parts_pkt_count(0, Pt, _Speed, Acc) -> 
+% 	P1 = Pt div 1468,
+% 	P2 = Pt rem 1468,
+% 	P3 = if
+% 		   P2 > 0 -> 1;
+% 		   true -> 0
+% 		 end,
+% 	Acc+P1+P3;
+% calc_parts_pkt_count(P, Pt, Speed, Acc) ->
+% 	P1 = Speed div 1468,
+% 	P2 = Speed rem 1468,
+% 	P3 = if
+% 		   P2 > 0 -> 1;
+% 		   true -> 0
+% 		 end,
+% 	calc_parts_pkt_count(P-1, Pt, Speed, Acc+P1+P3).
 
 make_pkt(Cnt, Bin) -> <<Cnt:32/integer, Bin/binary>>.
 

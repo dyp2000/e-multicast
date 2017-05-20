@@ -1,165 +1,100 @@
-%%% -*- coding: utf-8 -*-
-%%%-------------------------------------------------------------------
-%%% @author Dennis Y. Parygin
-%%% @copyright (C) 2014-2017, Telemetric Solutions Ltd.
-%%% @doc
-%%%
-%%% @end
-%%%-------------------------------------------------------------------
+%% -*- coding: utf-8 -*-
 -module(emc_ajax).
 -author("Dennis Y. Parygin").
 -email("dyp2000@mail.ru").
+-behaviour(cowboy_loop_handler).
 
--behaviour(gen_server).
+-record(ajax_state, {handler}).
+-define(HEAD_JS_CONTENT, {<<"content-type">>, <<"application/javascript; charset=utf-8">>}).
+-define(AJAX_REPLY(Status, Reply, State), State#ajax_state.handler ! {ajax_reply, Status, Reply}).
 
-%% API
 -export([
-	start_link/0,
-	cmd_get_meta/0,
-	cmd_start_over/0
+	init/3, 
+	info/3, 
+	terminate/3,
+	ajax/4
 ]).
-
-%% emc_ajax callbacks
--export([init/1,
-	handle_call/3,
-	handle_cast/2,
-	handle_info/2,
-	terminate/2,
-	code_change/3]).
-
--define(SERVER, ?MODULE).
-
--record(state, {}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Starts the server
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(start_link() ->
-	{ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
-start_link() ->
-	gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+init(_Transport, Req, []) ->
+	{Method, Req2} = cowboy_req:method(Req),
+	{Path, Req3} = cowboy_req:path(Req2),
+	State = #ajax_state{handler = self()},
+	self() ! {ajax, Method, Path},
+    {loop, Req3, State, hibernate}.
+
+terminate(_Reason, _Req, _State) ->
+    ok.
 
 %%%===================================================================
-%%% emc_ajax callbacks
+%%% callbacks
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Initializes the server
-%%
-%% @spec init(Args) -> {ok, State} |
-%%                     {ok, State, Timeout} |
-%%                     ignore |
-%%                     {stop, Reason}
-%% @end
-%%--------------------------------------------------------------------
--spec(init(Args :: term()) ->
-	{ok, State :: #state{}} | {ok, State :: #state{}, timeout() | hibernate} |
-	{stop, Reason :: term()} | ignore).
-init([]) ->
-	{ok, #state{}}.
+-spec(info(any(), Req, State) -> {ok, Req, State} | {loop, Req, State} | {loop, Req, State, hibernate} when Req::cowboy_req:req()).
 
-cmd_get_meta() ->
-	gen_server:call(?SERVER, cmd_get_meta).
+info({ajax, Method, Path}, Req, State) ->
+	{Req2, NewState} = ajax(Method, Path, Req, State),
+ 	{loop, Req2, NewState, hibernate};
 
-cmd_start_over() ->
-	gen_server:call(?SERVER, cmd_start_over).
+info({ajax_reply, Status, Reply}, Req, State) ->
+	case Status of
+		200 -> {ok, Req2} = cowboy_req:reply(Status, [?HEAD_JS_CONTENT], Reply, Req);
+		400 -> {ok, Req2} = cowboy_req:reply(Status, [?HEAD_JS_CONTENT], Reply, Req);
+		_ -> {ok, Req2} = cowboy_req:reply(Status, [], Reply, Req)
+	end,
+	{ok, Req2, State};
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling call messages
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(handle_call(Request :: term(), From :: {pid(), Tag :: term()}, State :: #state{}) ->
-	{reply, Reply :: term(), NewState :: #state{}} |
-	{reply, Reply :: term(), NewState :: #state{}, timeout() | hibernate} |
-	{noreply, NewState :: #state{}} |
-	{noreply, NewState :: #state{}, timeout() | hibernate} |
-	{stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
-	{stop, Reason :: term(), NewState :: #state{}}).
-
-handle_call(cmd_get_meta, _From, State) ->
-	Reply = gen_server:call(emc_srv, get_metadata),
-	io:format("Metadata: ~p~n", [Reply]),
-	{reply, {get_meta, Reply}, State};
-
-handle_call(cmd_start_over, _From, State) ->
-	gen_server:cast(emc_srv, start_over),
-	{reply, {start_over, ok}, State};
-
-handle_call(_Request, _From, State) ->
-	{reply, ok, State}.
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling cast messages
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(handle_cast(Request :: term(), State :: #state{}) ->
-	{noreply, NewState :: #state{}} |
-	{noreply, NewState :: #state{}, timeout() | hibernate} |
-	{stop, Reason :: term(), NewState :: #state{}}).
-handle_cast(_Request, State) ->
-	{noreply, State}.
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling all non call/cast messages
-%%
-%% @spec handle_info(Info, State) -> {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, State}
-%% @end
-%%--------------------------------------------------------------------
--spec(handle_info(Info :: timeout() | term(), State :: #state{}) ->
-	{noreply, NewState :: #state{}} |
-	{noreply, NewState :: #state{}, timeout() | hibernate} |
-	{stop, Reason :: term(), NewState :: #state{}}).
-handle_info(_Info, State) ->
-	{noreply, State}.
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% This function is called by a emc_ajax when it is about to
-%% terminate. It should be the opposite of Module:init/1 and do any
-%% necessary cleaning up. When it returns, the emc_ajax terminates
-%% with Reason. The return value is ignored.
-%%
-%% @spec terminate(Reason, State) -> void()
-%% @end
-%%--------------------------------------------------------------------
--spec(terminate(Reason :: (normal | shutdown | {shutdown, term()} | term()),
-	State :: #state{}) -> term()).
-terminate(_Reason, _State) ->
- 	ok.
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Convert process state when code is changed
-%%
-%% @spec code_change(OldVsn, State, Extra) -> {ok, NewState}
-%% @end
-%%--------------------------------------------------------------------
--spec(code_change(OldVsn :: term() | {down, term()}, State :: #state{}, Extra :: term()) ->
-	{ok, NewState :: #state{}} | {error, Reason :: term()}).
-code_change(_OldVsn, State, _Extra) ->
-	{ok, State}.
+info(Msg, Req, State) ->
+	lager:warning("Unknown message ~p with request ~p", [Msg, Req]),
+    {loop, Req, State, hibernate}.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+-spec(ajax(Method::string(), Path::string(), Req::term(), State::#ajax_state{}) -> {Req::term(), State::#ajax_state{}}).
+
+ajax(<<"GET">>, <<"/get_meta">>, Req, State) ->
+	Reply = gen_server:call(emc_srv, get_metadata),
+	io:format("Metadata: ~p~n", [Reply]),
+	?AJAX_REPLY(200, jsonx:encode([{result, Reply}]), State),
+	{Req, State};
+
+ajax(<<"GET">>, <<"/start_over">>, Req, State) ->
+	gen_server:cast(emc_srv, start_over),
+	?AJAX_REPLY(200, jsonx:encode([{result, ok}]), State),
+	{Req, State};
+
+ajax(<<"POST">>, <<"/req_lost">>, Req, State) ->
+	case cowboy_req:has_body(Req) of
+		false ->
+			?AJAX_REPLY(400, <<"Bad AJAX parameters">>, State),
+			{Req, State};
+		true -> 
+			case cowboy_req:body_qs(Req) of
+				{ok, PostVals, Req2} ->
+					io:format("Post: ~p~n", [PostVals]),
+
+					
+
+					?AJAX_REPLY(200, jsonx:encode([{result, ok}]), State),
+					{Req2, State};
+				{error, Req2} ->
+					?AJAX_REPLY(400, <<"Bad AJAX parameters">>, State),
+					{Req2, State}
+			end
+	end;
+
+ajax(<<"GET">>, _, _Req, State) ->
+	?AJAX_REPLY(406, <<"(GET) Not Acceptable">>, State);
+
+ajax(<<"POST">>, _, _Req, State) ->
+	?AJAX_REPLY(406, <<"(POST) Not Acceptable">>, State);
+
+ajax(_, _, _Req, State) ->
+	%% Method not allowed.
+	?AJAX_REPLY(405, <<"Method not allowed">>, State).
+

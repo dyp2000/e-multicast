@@ -4,5 +4,5 @@
 
 # Запуск клиента
 
-	erl -s emc_cli -url http://ip.address:8088/data/get_meta
+	erl -s emc_cli -url http://ip.address:8088/get_meta
 	

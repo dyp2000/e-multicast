@@ -57,6 +57,7 @@ loop(Socket, Sz, FileName, Crc32, IoDev, Acc, Cnt, Pi, LPC) ->
 		{udp, Socket, _, _, Pkt} ->
 			{Ci, B} = parse_pkt(Pkt),
 			Lost = lost(Pi, Ci),
+			request_lost(Lost),
 			loop(Socket, Sz+byte_size(Pkt), FileName, Crc32, IoDev, [{Ci, B}|Acc], Cnt+1, Ci, [Lost|LPC])
 	after 1000 ->
 		io:format("Принято ~p пакетов~n", [Cnt]),
@@ -68,7 +69,8 @@ loop(Socket, Sz, FileName, Crc32, IoDev, Acc, Cnt, Pi, LPC) ->
 		file:write(IoDev, Bin),
 		file:sync(IoDev),
 		file:close(IoDev),
-		io:format("Результат проверки CRC32: ~p~n", [check_crc(FileName, Crc32)])
+		io:format("Результат проверки CRC32: ~p~n", [check_crc(FileName, Crc32)]),
+		halt()
 	end.
 
 prepare_bin(Packets) ->	iolist_to_binary([B || {_I, B} <- lists:sort(Packets)]).
@@ -99,20 +101,37 @@ get_metadata() ->
 	end.
 
 start_over() ->
-	{ok, Args} = init:get_argument(url),
-	Url = lists:flatten(Args),
-	{ok, {Scheme, _, Host, Port, _, _}} = http_uri:parse(Url),
-	Url2 = lists:flatten(io_lib:fwrite("~p\://~s\:~p/data/start_over", [Scheme, Host, Port])),
+	{Scheme, Host, Port} = get_host(),
+	Url2 = lists:flatten(io_lib:fwrite("~p\://~s\:~p/start_over", [Scheme, Host, Port])),
 	io:fwrite("Url2: ~s~n", [Url2]),
-	case inets:start() of
-		ok ->
-			{ok, {_Status, _Header, _Data}} = httpc:request(Url2),
-			inets:stop();
-		{error, Reason} ->
-			{error, Reason}
-	end.
+	ok = inets:start(),
+	{ok, {_Status, _Header, _Data}} = httpc:request(Url2),
+	inets:stop().
 
 check_crc(FileName, OrgCrc32) ->
 	{ok, B} = file:read_file("./" ++ FileName),
 	Crc32 = erlang:crc32(B),
 	OrgCrc32 == Crc32.
+
+request_lost([]) -> ok;
+request_lost(Lost) ->
+	io:format("Запросить потерянные пакеты: ~p~n", [Lost]),
+	ok = inets:start(),
+	{Scheme, Host, Port} = get_host(),
+
+	URL = lists:flatten(io_lib:fwrite("~p\://~s\:~p/req_lost", [Scheme, Host, Port])),
+	io:format("URL: ~p~n", [URL]),
+
+	Res = httpc:request(post, {URL, [], "application/json", jsonx:encode(Lost)}, [], []),
+	% Res = httpc:request(URL),
+	io:format("~p~n", [Res]),
+
+
+	inets:stop().
+
+get_host() ->
+	{ok, Args} = init:get_argument(url),
+	Url = lists:flatten(Args),
+	{ok, {Scheme, _, Host, Port, _, _}} = http_uri:parse(Url),
+	{Scheme, Host, Port}.
+
