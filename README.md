@@ -1,7 +1,7 @@
 # Сборка
 
-make get-deps
-make
+	make get-deps
+	make
 
 # Запуск сервера
 
