@@ -40,7 +40,7 @@ start() ->
 			]),
 			case Res of
 				{ok, Sock} ->
-					inet:setopts(Sock, [{recbuf, 128*1024}]),
+					inet:setopts(Sock, [{recbuf, 8*1024}]),
 					Opts = inet:getopts(Sock, [buffer, recbuf]),
 					io:format("Opts: ~p~n", [Opts]),
 					{ok, IoDev} = file:open(FileName, [write, binary]),
